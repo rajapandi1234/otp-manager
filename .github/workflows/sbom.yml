@@ -1,0 +1,55 @@
+name: Generate Docker SBOM (Filtered)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_name:
+        description: "Docker image to scan"
+        required: true
+      image_tag:
+        description: "Image tag"
+        required: true
+
+jobs:
+  generate-sbom:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo (required for workflow but doesn't push)
+        uses: actions/checkout@v4
+
+      - name: Pull Docker image
+        run: |
+          docker pull ${{ github.event.inputs.image_name }}:${{ github.event.inputs.image_tag }}
+
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate full SBOM
+        run: |
+          syft ${{ github.event.inputs.image_name }}:${{ github.event.inputs.image_tag }} \
+            -o json > sbom-full.json
+
+      - name: Filter SBOM to keep only MOSIP-compliant licenses
+        run: |
+          pip install jq
+          jq '
+            .artifacts |= map(
+              .licenses |= map(
+                select(
+                  .expression == "MIT"
+                  or .expression == "Apache-2.0"
+                  or .expression == "BSD-2-Clause"
+                  or .expression == "BSD-3-Clause"
+                  or .expression == "MPL-2.0"
+                )
+              )
+            )
+          ' sbom-full.json > sbom-final.json
+
+      - name: Upload Final SBOM Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-output
+          path: sbom-final.json
