@@ -1,4 +1,4 @@
-name: Generate Clean SPDX SBOM + Third-Party Notices
+name: LICENCE COMPLIANCE
 
 on:
   workflow_dispatch:
