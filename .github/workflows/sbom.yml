@@ -11,15 +11,22 @@ on:
         description: "Docker image tag (e.g., 1.3.0)"
         required: true
         type: string
+      branch_name:
+        description: "Branch to checkout (e.g., main, release-1.3.0)"
+        required: true
+        default: "main"
+        type: string
 
 jobs:
   sbom:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout repo (no push / no PR)
+      # 1. Checkout repo on selected branch
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch_name }}
 
       # 2. Pull the existing Docker image
       - name: Pull Docker Image
@@ -56,7 +63,6 @@ jobs:
               "EDL-1.0": "https://www.eclipse.org/org/documents/edl-v10.php",
           }
 
-          # Map raw URL/text → SPDX
           SPDX_MAP = {
               r"apache.*2": "Apache-2.0",
               r"www\.apache\.org": "Apache-2.0",
@@ -81,13 +87,11 @@ jobs:
               spdx = None
               original_licenses = c.get("licenses", [])
 
-              # 1. Prefer SPDX from Syft if available
               for lic in original_licenses:
                   if lic.get("spdxExpression"):
                       spdx = lic["spdxExpression"]
                       break
 
-              # 2. If SPDX empty → detect from raw license value
               if not spdx:
                   for lic in original_licenses:
                       raw = lic.get("value") or ""
@@ -96,13 +100,11 @@ jobs:
                           spdx = guessed
                           break
 
-              # 3. Update component license
               if spdx:
                   c["licenses"] = [{"license": {"id": spdx}}]
               else:
                   c["licenses"] = []
 
-              # 4. Build Third-Party entry
               entry = {
                   "name": c.get("name", "UNKNOWN"),
                   "version": c.get("version", "UNKNOWN"),
@@ -112,11 +114,9 @@ jobs:
               }
               third_party.append(entry)
 
-          # Write clean SBOM
           with open("sbom-final.json", "w") as f:
               json.dump(sbom, f, indent=2)
 
-          # Write THIRD-PARTY-NOTICES
           with open("THIRD-PARTY-NOTICES.txt", "w") as f:
               for e in third_party:
                   f.write("============================================================\n")
@@ -130,7 +130,7 @@ jobs:
 
           python3 clean_licenses.py
 
-      # 6. Upload final artifacts
+      # 6. Upload the output
       - name: Upload SBOM & THIRD-PARTY-NOTICES
         uses: actions/upload-artifact@v4
         with:
