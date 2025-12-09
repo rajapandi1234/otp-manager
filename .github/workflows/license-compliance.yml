@@ -1,0 +1,140 @@
+name: LICENCE COMPLIANCE
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_name:
+        description: "Docker image name (e.g., mosip/registration-service)"
+        required: true
+        type: string
+      image_tag:
+        description: "Docker image tag (e.g., 1.3.0)"
+        required: true
+        type: string
+      branch_name:
+        description: "Branch to checkout (e.g., main, release-1.3.0)"
+        required: true
+        default: "main"
+        type: string
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout repo on selected branch
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch_name }}
+
+      # 2. Pull the existing Docker image
+      - name: Pull Docker Image
+        run: |
+          docker pull "${{ github.event.inputs.image_name }}:${{ github.event.inputs.image_tag }}"
+
+      # 3. Install Syft
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      # 4. Generate RAW SBOM (JSON)
+      - name: Generate Raw SBOM
+        run: |
+          syft "${{ github.event.inputs.image_name }}:${{ github.event.inputs.image_tag }}" \
+            -o json > sbom-raw.json
+
+      # 5. Normalize SPDX licenses + Generate THIRD-PARTY-NOTICES
+      - name: Clean SPDX Licenses + Generate Third-Party Notices
+        run: |
+          cat > clean_licenses.py << 'EOF'
+          import json, re
+
+          with open("sbom-raw.json") as f:
+              sbom = json.load(f)
+
+          SPDX_URL = {
+              "Apache-2.0": "https://www.apache.org/licenses/LICENSE-2.0",
+              "MIT": "https://opensource.org/licenses/MIT",
+              "BSD-2-Clause": "https://opensource.org/licenses/BSD-2-Clause",
+              "BSD-3-Clause": "https://opensource.org/licenses/BSD-3-Clause",
+              "MPL-2.0": "https://www.mozilla.org/en-US/MPL/2.0/",
+              "EDL-1.0": "https://www.eclipse.org/org/documents/edl-v10.php",
+          }
+
+          SPDX_MAP = {
+              r"apache.*2": "Apache-2.0",
+              r"www\.apache\.org": "Apache-2.0",
+              r"mit": "MIT",
+              r"bsd.*2": "BSD-2-Clause",
+              r"bsd.*3": "BSD-3-Clause",
+              r"mpl.*2": "MPL-2.0",
+              r"mozilla.*public.*2": "MPL-2.0",
+              r"eclipse.*edl": "EDL-1.0",
+          }
+
+          def guess_spdx(raw):
+              raw_l = raw.lower()
+              for pattern, spdx in SPDX_MAP.items():
+                  if re.search(pattern, raw_l):
+                      return spdx
+              return None
+
+          third_party = []
+
+          for c in sbom.get("artifacts", []):
+              spdx = None
+              original_licenses = c.get("licenses", [])
+
+              for lic in original_licenses:
+                  if lic.get("spdxExpression"):
+                      spdx = lic["spdxExpression"]
+                      break
+
+              if not spdx:
+                  for lic in original_licenses:
+                      raw = lic.get("value") or ""
+                      guessed = guess_spdx(raw)
+                      if guessed:
+                          spdx = guessed
+                          break
+
+              if spdx:
+                  c["licenses"] = [{"license": {"id": spdx}}]
+              else:
+                  c["licenses"] = []
+
+              entry = {
+                  "name": c.get("name", "UNKNOWN"),
+                  "version": c.get("version", "UNKNOWN"),
+                  "license": spdx or "UNKNOWN",
+                  "homepage": c.get("homepage") or c.get("purl") or "N/A",
+                  "license_url": SPDX_URL.get(spdx, "N/A"),
+              }
+              third_party.append(entry)
+
+          with open("sbom-final.json", "w") as f:
+              json.dump(sbom, f, indent=2)
+
+          with open("THIRD-PARTY-NOTICES.txt", "w") as f:
+              for e in third_party:
+                  f.write("============================================================\n")
+                  f.write(f"Package: {e['name']}\n")
+                  f.write(f"Version: {e['version']}\n")
+                  f.write(f"SPDX License: {e['license']}\n")
+                  f.write(f"Homepage: {e['homepage']}\n")
+                  f.write(f"License URL: {e['license_url']}\n")
+                  f.write("============================================================\n\n")
+          EOF
+
+          python3 clean_licenses.py
+
+      # 6. Upload the output
+      - name: Upload SBOM & THIRD-PARTY-NOTICES
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-clean
+          path: |
+            sbom-final.json
+            THIRD-PARTY-NOTICES.txt
